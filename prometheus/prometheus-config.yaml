@@ -1,0 +1,457 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval:     15s
+      evaluation_interval: 15s
+    rule_files:
+      - /etc/prometheus/rule.yml
+    alerting:
+      alertmanagers:
+        - static_configs:
+          - targets: ["alertmanager:9093"]
+    scrape_configs:
+    - job_name: 'prometheus'
+      metrics_path: '/prometheus/metrics'
+      static_configs:
+      - targets: ['localhost:9090']
+
+    - job_name: 'kubernetes-node'
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*):10250'
+        replacement: '${1}:9100'
+        target_label: __address__
+        action: replace
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+) 
+    
+    - job_name: 'kubernetes-apiservers'
+      kubernetes_sd_configs:
+      - role: endpoints
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+    - job_name: 'kubernetes-cadvisor'
+      kubernetes_sd_configs:
+      - role: node
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+    - job_name: 'kubernetes-kubelet'
+      kubernetes_sd_configs:
+      - role: node
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics
+
+    - job_name: 'kubernetes-ingresses'
+      kubernetes_sd_configs:
+      - role: ingress
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_ingress_annotation_prometheus_io_probe]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_ingress_scheme,__address__,__meta_kubernetes_ingress_path]
+        regex: (.+);(.+);(.+)
+        replacement: ${1}://${2}${3}
+        target_label: __param_target
+      - target_label: __address__
+        replacement: blackbox-exporter.example.com:9115
+      - source_labels: [__param_target]
+        target_label: instance
+      - action: labelmap
+        regex: __meta_kubernetes_ingress_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_ingress_name]
+        target_label: kubernetes_name
+
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_pod_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_pod_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_pod_name
+        target_label: kubernetes_pod_name
+
+    - job_name: kubernetes-service-endpoints
+      kubernetes_sd_configs:
+      - role: endpoints
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scrape
+      - action: replace
+        regex: (https?)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_scheme
+        target_label: __scheme__
+      - action: replace
+        regex: (.+)
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_path
+        target_label: __metrics_path__
+      - action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        source_labels:
+        - __address__
+        - __meta_kubernetes_service_annotation_prometheus_io_port
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - action: replace
+        source_labels:
+        - __meta_kubernetes_service_name
+        target_label: kubernetes_name
+   
+    - job_name: kubernetes-services
+      kubernetes_sd_configs:
+      - role: service
+      metrics_path: /probe
+      params:
+        module:
+        - http_2xx
+      relabel_configs:
+      - action: keep
+        regex: true
+        source_labels:
+        - __meta_kubernetes_service_annotation_prometheus_io_probe
+      - source_labels:
+        - __address__
+        target_label: __param_target
+      - replacement: blackbox
+        target_label: __address__
+      - source_labels:
+        - __param_target
+        target_label: instance
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - source_labels:
+        - __meta_kubernetes_namespace
+        target_label: kubernetes_namespace
+      - source_labels:
+        - __meta_kubernetes_service_name
+        target_label: kubernetes_name
+  rule.yml: |
+    groups:
+    - name: pod.rules
+      rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          summary: "Prometheus服务{{ $labels.instance }} Down"
+          description: "Instance: {{ $labels.instance }} 停止工作"
+          value: "{{ $value }}"
+
+      - alert: PodCpuUsage
+        expr: sum by(pod,namespace,kubernetes_io_hostname) (rate(container_cpu_usage_seconds_total{image!=""}[1m])) * 100 > 85
+        for: 1m
+        labels:
+          severity: warning 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "Node: {{$labels.kubernetes_io_hostname}} 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} CPU使用率超过95%"
+          summary:  " Pod: {{ $labels.pod }} CPU使用率超过95%"
+          value: "{{ $value }}"
+
+
+      - alert: PodMemoryUsage
+        expr: sum(container_memory_rss{image!=""}) by(pod, namespace,kubernetes_io_hostname) / sum(container_spec_memory_limit_bytes{image!=""}) by(pod, namespace,kubernetes_io_hostname) * 100 != +inf > 95
+        for: 5m
+        labels:
+          severity: warning 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " Node: {{$labels.kubernetes_io_hostname }}   命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} 内存使用率超过95%"
+          summary: " Pod: {{ $labels.pod }} 内存使用率超过95%"
+          value: "{{ $value }}"
+
+      - alert: PodFailed
+        expr: sum (kube_pod_status_phase{phase="Failed"}) by (pod,namespace) > 0
+        for: 1m
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "  命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is Failed"
+          summary: " Pod: {{ $labels.pod }} pod status is Failed"
+          value: "{{ $value }}"
+
+      - alert: PodUnknown
+        expr: sum (kube_pod_status_phase{phase="Unknown"}) by (pod,namespace) > 0
+        for: 1m
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "  命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is Unknown"
+          summary: " Pod: {{ $labels.pod }} pod status is Unknown"
+          value: "{{ $value }}"
+
+      - alert: PodPending
+        expr: sum (kube_pod_status_phase{phase="Pending"}) by (pod,namespace) > 0
+        for: 1m
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is Pending"
+          summary: " Pod: {{ $labels.pod }} status is Pending"
+          value: "{{ $value }}"
+
+      - alert: PodCrashLoopBackOff
+        expr: sum (kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}) by (reason,namespace,pod)  == 1
+        for: 3s
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is CrashLoopBackOff"
+          summary: " Pod: {{ $labels.pod }} status is CrashLoopBackOff"
+          value: "{{ $value }}"
+
+      - alert: PodImagePullBackOff
+        expr: sum (kube_pod_container_status_waiting_reason{reason="ImagePullBackOff"}) by (reason,namespace,pod)  == 1
+        for: 10s
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is ImagePullBackOff"
+          summary: "Pod: {{ $labels.pod }} status is ImagePullBackOff"
+          value: "{{ $value }}"
+
+      - alert: PodErrImagePull
+        expr: sum (kube_pod_container_status_waiting_reason{reason="ErrImagePull"}) by (reason,namespace,pod)  == 1
+        for: 10s
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is ErrImagePull"
+          summary: "Pod: {{ $labels.pod }} status is ErrImagePull"
+          value: "{{ $value }}"
+
+      - alert: PodCreateContainerError
+        expr: sum (kube_pod_container_status_waiting_reason{reason="CreateContainerError"}) by (reason,namespace,pod)  == 1
+        for: 1m
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is CreateContainerError"
+          summary: "Pod: {{ $labels.pod }} status is CreateContainerError"
+          value: "{{ $value }}"
+
+      - alert: PodCreateContainerConfigError
+        expr: sum (kube_pod_container_status_waiting_reason{reason="CreateContainerConfigError"}) by (reason,namespace,pod)  == 1
+        for: 1m
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} status is CreateContainerConfigError"
+          summary: "Pod: {{ $labels.pod }} status is CreateContainerConfigError"
+          value: "{{ $value }}"
+
+      - alert: PodCreate
+        expr: sum (kube_pod_container_status_waiting_reason{reason="ContainerCreating"}) by (reason,namespace,pod)  > 0
+        for: 1s
+        labels:
+          severity: warning 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} Container  Createing"
+          summary: "Pod: {{ $labels.pod }} Createing"
+          value: "{{ $value }}"
+
+      - alert: PodOOMKilled
+        expr: sum (kube_pod_init_container_status_terminated_reason{reason="OOMKilled"}) by (reason,namespace,pod)  > 0
+        for: 5s
+        labels:
+          severity: error 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} is  OOMKilled"
+          summary: "Pod: {{ $labels.pod }}  OOMKilled"
+          value: "{{ $value }}"
+
+      - alert: PodNetworkReceive
+        expr: sum (rate (container_network_receive_bytes_total{image!="",name=~"^k8s_.*"}[5m]) /1000) by (pod,namespace,kubernetes_io_hostname)  > 30000
+        for: 5m
+        labels:
+          severity: warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " Node: {{ $labels.kubernetes_io_hostname }} 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} 接受流量大于30MB/s "
+          summary: " Pod: {{ $labels.pod }} 接受到的网络入流量大于30MB/s"
+          value: "{{ $value }}K/s"                
+
+      - alert: PodNetworkTransmit
+        expr: sum (rate (container_network_transmit_bytes_total{image!="",name=~"^k8s_.*"}[5m]) /1000) by (pod,namespace,kubernetes_io_hostname) > 30000
+        for: 5m
+        labels:
+          severity: warning 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " Node: {{ $labels.kubernetes_io_hostname }} 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} 传输流量大于30MB/s"
+          summary: "命名空间: {{ $labels.namespace }} | PodName: {{ $labels.pod  }} 传输的网络出流量大于30MB/s"
+          value: "{{ $value }}K/s"
+
+      - alert: PodRestart
+        expr: sum (changes (kube_pod_container_status_restarts_total[1m])) by (pod,namespace) > 0
+        for: 5s
+        labels:
+          severity: warning 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " 命名空间: {{ $labels.namespace }} | Pod: {{ $labels.pod }} Pod is restart"
+          summary: "Pod: {{ $labels.pod }} pod is restart"
+          value: "{{ $value }}"
+  nodes.yml: |
+    groups:
+    - name: node-rule
+      rules:
+      - alert: NodeFilesystemUsage
+        expr: 100 - (node_filesystem_free_bytes{device="rootfs"} / node_filesystem_size_bytes{device="rootfs"} * 100) > 95
+        for: 5m
+        labels:
+          severity: warning 
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "Node: {{ $labels.instance }} 分区使用率大于95% (当前值: {{ $value }})"
+          summary: " {{ $labels.instance }} : {{ $labels.mountpoint }} 分区使用率超过95%"
+          value: "{{ $value }}"
+
+      - alert: NodeMemoryUsage
+        expr: 100 - (node_memory_MemFree_bytes+node_memory_Cached_bytes+node_memory_Buffers_bytes) / node_memory_MemTotal_bytes * 100 > 95
+        for: 5m
+        labels:
+          severity: warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "Node: {{ $labels.instance }}内存使用大于95% (当前值: {{ $value }})"
+          summary: "{{ $labels.instance }} 内存使用率超过95%"
+          value: "{{ $value }}"
+
+      - alert: NodeCPUUsage    
+        expr: 100 - (avg(irate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance) * 100) > 95
+        for: 5m
+        labels:
+          severity: warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "Node: {{ $labels.instance }}CPU使用率大于95% (当前值: {{ $value }})"
+          summary: "{{ $labels.instance }} CPU使用率超过95%"
+          value: "{{ $value }}"
+
+      - alert: 网络
+        expr: ((sum(rate (node_network_receive_bytes_total{device!~'tap.*|veth.*|br.*|docker.*|virbr*|lo*'}[5m])) by (instance)) / 100) > 153600
+        for: 5m
+        labels:
+          severity: warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "Node: {{ $labels.instance  }}流入网络带宽持续2分钟高于150M  RX带宽使用率{{$value}}"
+          summary:   " {{ $labels.instance }} network 带宽过高"
+          value: "{{ $value }}"
+
+      - alert: TCP会话
+        expr: node_netstat_Tcp_CurrEstab > 20000
+        for: 5m
+        labels:
+          severity: Warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: "Node: {{ $labels.instance }} TCP_ESTABLISHED大于20000 (目前使用:{{$value}})"
+          summary: "{{$labels.instance}} TCP_ESTABLISHED过高！"
+          value: "{{ $value }}%"
+
+      - alert: HostDiskIOWrite
+        expr: irate(node_disk_writes_completed_total[5m]) > 4000
+        for: 10m
+        labels:
+          severity: Warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " Node: {{ $labels.instance }},设备:{{$labels.device}} 每秒写入率过高"
+          summary:  "Disk iops 每秒写入速率超过 4000"
+          value: "{{ $value }}"
+
+      - alert: HostDiskIORead
+        expr: irate(node_disk_reads_completed_total[5m]) > 4000
+        for: 10m
+        labels:
+          severity: Warning
+          instance: "{{ $labels.instance }}"
+        annotations:
+          description: " Node: {{ $labels.instance }},设备:{{$labels.device}} 读取率较高"
+          summary:  "Disk iops 每秒读取超过 4000"
+          value: "{{ $value }}"

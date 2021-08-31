@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    name: alertmanager-deployment
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+      - image:   prom/alertmanager
+        name: alertmanager
+        ports:
+        - containerPort: 9093
+          protocol: TCP
+        env:
+        - name: TZ
+          value: Asia/Shanghai
+        resources:
+          requests:
+            cpu: 50m
+            memory: 50Mi
+          limits:
+            cpu: 200m
+            memory: 200Mi
+        volumeMounts:
+        - mountPath: "/alertmanager"
+          name: data
+        - mountPath: "/etc/alertmanager"
+          name: config-volume
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: config-volume
+        configMap:
+          name: alertmanager-conf
+      - name: date
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: alertmanager
+  annotations:
+    prometheus.io/scrape: 'true'
+  name: alertmanager
+  namespace: monitoring
+spec:
+  ports:
+  - port: 9093
+    targetPort: 9093
+  selector:
+    app: alertmanager
